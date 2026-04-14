@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wave Visualizer v6</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #071f10;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    font-family: monospace;
+  }
+  #controls {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(255,200,50,0.3);
+    border-radius: 8px;
+    padding: 8px 16px;
+    color: #ffd060;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  #controls label { opacity: 0.7; }
+  #controls select, #controls input {
+    background: #0a2a14;
+    color: #ffd060;
+    border: 1px solid rgba(255,200,50,0.4);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #controls input[type=range] {
+    width: 90px;
+    padding: 0;
+    accent-color: #ffd060;
+  }
+  #blendLabel, #opacityLabel, #widthLabel, #strandLabel {
+    color: #ffee88;
+    min-width: 28px;
+    display: inline-block;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <label>Blend:</label>
+  <select id="blendMode">
+    <option value="lighter">lighter (additive)</option>
+    <option value="screen">screen</option>
+    <option value="lighten">lighten</option>
+    <option value="color-dodge">color-dodge</option>
+    <option value="overlay">overlay</option>
+    <option value="hard-light">hard-light</option>
+    <option value="soft-light">soft-light</option>
+    <option value="source-over">source-over (normal)</option>
+  </select>
+
+  <label>Opacity:</label>
+  <input type="range" id="opacitySlider" min="5" max="100" value="80">
+  <span id="opacityLabel">80%</span>
+
+  <label>Glow:</label>
+  <input type="range" id="glowSlider" min="0" max="20" value="4">
+  <span id="glowLabel">4</span>
+
+  <label>Width:</label>
+  <input type="range" id="widthSlider" min="1" max="30" value="10">
+  <span id="widthLabel">1.0</span>
+
+  <label>Strands:</label>
+  <input type="range" id="strandSlider" min="2" max="40" value="10">
+  <span id="strandLabel">10</span>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Controls
+const blendModeEl   = document.getElementById('blendMode');
+const opacitySlider = document.getElementById('opacitySlider');
+const opacityLabel  = document.getElementById('opacityLabel');
+const glowSlider    = document.getElementById('glowSlider');
+const glowLabel     = document.getElementById('glowLabel');
+const widthSlider   = document.getElementById('widthSlider');
+const widthLabel    = document.getElementById('widthLabel');
+const strandSlider  = document.getElementById('strandSlider');
+const strandLabel   = document.getElementById('strandLabel');
+
+opacitySlider.addEventListener('input', () => opacityLabel.textContent = opacitySlider.value + '%');
+glowSlider.addEventListener('input',   () => glowLabel.textContent = glowSlider.value);
+widthSlider.addEventListener('input',  () => widthLabel.textContent = (widthSlider.value / 10).toFixed(1));
+strandSlider.addEventListener('input', () => strandLabel.textContent = strandSlider.value);
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const NUM_CONTROL_POINTS = 10;
+let t = 0;
+
+function getControlPoints(time) {
+  const points = [];
+  for (let i = 0; i < NUM_CONTROL_POINTS; i++) {
+    const nx = i / (NUM_CONTROL_POINTS - 1);
+    const y = 0.78
+      + 0.09 * Math.sin(nx * Math.PI * 2.2 + time * 0.4)
+      + 0.04 * Math.sin(nx * Math.PI * 4.5 - time * 0.28)
+      + 0.02 * Math.cos(nx * Math.PI * 7.0 + time * 0.55);
+    points.push({ nx, y });
+  }
+  return points;
+}
+
+function catmullRom(p0, p1, p2, p3, t) {
+  return 0.5 * (
+    2 * p1 +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t
+  );
+}
+
+function getSpineY(controlPoints, nx) {
+  const n = controlPoints.length;
+  const scaled = nx * (n - 1);
+  const i = Math.min(Math.floor(scaled), n - 2);
+  const f = scaled - i;
+  const p0 = controlPoints[Math.max(0, i - 1)].y;
+  const p1 = controlPoints[i].y;
+  const p2 = controlPoints[i + 1].y;
+  const p3 = controlPoints[Math.min(n - 1, i + 2)].y;
+  return catmullRom(p0, p1, p2, p3, f);
+}
+
+function drawStrands(time) {
+  const W = canvas.width;
+  const H = canvas.height;
+  const STEPS = 200;
+
+  const numStrands  = parseInt(strandSlider.value);
+  const opacity     = parseInt(opacitySlider.value) / 100;
+  const glowBlur    = parseInt(glowSlider.value);
+  const lineWidth   = parseInt(widthSlider.value) / 10;
+  const blendMode   = blendModeEl.value;
+
+  const controlPoints = getControlPoints(time);
+
+  ctx.globalCompositeOperation = blendMode;
+
+  for (let s = 0; s < numStrands; s++) {
+    const t_strand    = s / (numStrands - 1);
+    const strandOffset = t_strand - 0.5;
+
+    const points = [];
+
+    for (let i = 0; i <= STEPS; i++) {
+      const nx = i / STEPS;
+
+      const converge =
+        0.3 + 0.7 * Math.abs(Math.sin(nx * Math.PI * 2.5 + time * 0.18))
+            + 0.3 * Math.abs(Math.sin(nx * Math.PI * 5.0 - time * 0.12));
+
+      const perp   = strandOffset * 0.055 * converge;
+      const wiggle = 0.004 * Math.sin(nx * Math.PI * 9 + strandOffset * 5 + time * 0.6);
+
+      points.push({
+        x: nx * W,
+        y: (getSpineY(controlPoints, nx) + perp + wiggle) * H
+      });
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length - 1; i++) {
+      const mx = (points[i].x + points[i + 1].x) / 2;
+      const my = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, mx, my);
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+
+    const edgeT = Math.abs(t_strand - 0.5) * 2;
+    const r = 255;
+    const g = Math.round(180 - edgeT * 60);
+    const b = Math.round(20 - edgeT * 15);
+
+    // Glow pass
+    if (glowBlur > 0) {
+      ctx.shadowColor = `rgb(${r},${g},${b})`;
+      ctx.shadowBlur  = glowBlur;
+      ctx.lineWidth   = lineWidth * 3;
+      ctx.strokeStyle = `rgba(${r},${g},${b},${opacity * 0.35})`;
+      ctx.stroke();
+    }
+
+    // Sharp line
+    ctx.shadowBlur  = 0;
+    ctx.lineWidth   = lineWidth;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${opacity})`;
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowBlur = 0;
+}
+
+function animate(timestamp) {
+  t = timestamp / 1000;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#071f10';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  drawStrands(t);
+  ctx.restore();
+
+  requestAnimationFrame(animate);
+}
+
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
